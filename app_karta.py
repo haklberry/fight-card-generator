@@ -14,7 +14,7 @@ import streamlit as st
 from PIL import Image
 
 from generate_card import (
-    FONT_FILE, FORMATS, VERT_PAD,
+    FONT_FILE, FORMATS, VERT_PAD, BUNDLED_LOGO,
     ensure_fonts, load_excel, paginate_items, render_page,
     calc_page1_row_h, calc_max_fights_p2,
 )
@@ -73,6 +73,18 @@ uploaded = st.file_uploader(
     type=["xlsx"],
     label_visibility="visible",
 )
+
+logo_uploaded = st.file_uploader(
+    "Logo — volitelné (nahraj jiné logo pro výměnu)",
+    type=["png", "jpg", "jpeg"],
+    label_visibility="visible",
+    help="Výchozí logo se načte automaticky ze souboru logo.png ve složce aplikace. "
+         "Nahráním jiného souboru ho dočasně vyměníš.",
+)
+# Defaultní logo ze souboru v projektu; upload ho přebije
+logo_image = Image.open(BUNDLED_LOGO).convert("RGBA") if BUNDLED_LOGO.exists() else None
+if logo_uploaded:
+    logo_image = Image.open(io.BytesIO(logo_uploaded.getvalue())).convert("RGBA")
 
 bg_uploaded = st.file_uploader(
     "Vlastní pozadí — volitelné (PNG nebo JPG)",
@@ -166,7 +178,7 @@ if st.button("🎨 Generovat grafiky", type="primary", use_container_width=True)
                 text=f"Generuji {fmt.upper()} — strana {pnum}/{len(pages)}…",
             )
             img = render_page(fw, fh, page_items, event, font_file,
-                              bg_image, None, pad_top=pt, pad_bottom=pb,
+                              bg_image, logo_image, pad_top=pt, pad_bottom=pb,
                               show_header=(pnum == 1),
                               page_num=pnum, total_pages=len(pages),
                               row_h_override=_row_h_per_fmt[fmt])

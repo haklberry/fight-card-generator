@@ -55,6 +55,7 @@ MAX_PER_PAGE = 12
 # Font — bundled copy ships alongside this script in fonts/
 _SCRIPT_DIR  = Path(__file__).resolve().parent
 BUNDLED_FONT = _SCRIPT_DIR / "fonts" / "Montserrat[wght].ttf"
+BUNDLED_LOGO = _SCRIPT_DIR / "CMTA logo white.png"   # default logo; replace with any PNG
 # Cache fallback for when the script is run from a copy without the fonts/ folder
 FONT_CACHE   = Path.home() / ".cache" / "fightcard_fonts"
 FONT_FILE    = FONT_CACHE / "Montserrat_variable.ttf"
@@ -412,10 +413,16 @@ TIME_SZ   = 24   # Bold      — round format
 NUM_SZ    = 24   # Bold      — fight number
 DATE_SZ           = 38   # Bold      — date / ring
 COLHDR_SZ         = 22   # SemiBold  — column labels
-TITLE_SZ          = 60   # ExtraBold — event title (auto-shrinks to fit)
+TITLE_SZ          = 54   # ExtraBold — event title (auto-shrinks to fit)
 PAGENUM_SZ        = 18   # Medium    — page number at bottom
 PNUM_MARGIN_ABOVE = 20   # pts of clear space above page-number text (fights end here)
 PNUM_MARGIN_BELOW =  8   # pts between page-number text and bottom-padding edge
+
+# Logo placement (at 1080 px base width)
+LOGO_W_BASE = 120   # draw width in px
+LOGO_PAD_R  = 90    # distance from right edge
+LOGO_PAD_T  = 54    # distance from top of header block
+TITLE_PAD_L = 74    # left offset for title and date/ring text
 
 
 def render_page(
@@ -525,8 +532,12 @@ def render_page(
     blue_lx = bwt_cx + wt_ref // 2 + col_gap
     blue_rx = w - pad_r - card_pad_x
 
-    # ── Step 4: header fonts ──────────────────────────────────────────────────
-    title_max_w = w - round(44 * s)
+    # ── Step 4: header fonts & logo geometry ─────────────────────────────────
+    logo_draw_w  = round(LOGO_W_BASE * s)
+    logo_lx      = w - round(LOGO_PAD_R * s) - logo_draw_w
+    title_x      = round(TITLE_PAD_L * s)
+    title_max_w  = logo_lx - title_x - round(10 * s)
+
     f_title = F("extrabold", TITLE_SZ * s)
     tw_raw  = TW(f_title, event.get("title", ""))
     if tw_raw > title_max_w:
@@ -549,17 +560,25 @@ def render_page(
     draw.rectangle([0, pt, w, pt + nav_total], fill=NAVY)
 
     if show_header:
-        # Title — centred across full width
+        # Title — left-aligned
         title  = event.get("title", "")
         tw, th = text_size(draw, title, f_title)
         ty     = pt + round(36 * s)
-        draw.text((w // 2 - tw // 2, ty), title, font=f_title, fill=WHITE)
+        draw.text((title_x, ty), title, font=f_title, fill=WHITE)
 
-        # Date | Ring — centred below title
-        sub   = f"{event.get('date', '')}  |  {event.get('ring', '')}"
-        sw, _ = text_size(draw, sub, f_date)
-        dy    = ty + th + round(10 * s)
-        draw.text((w // 2 - sw // 2, dy), sub, font=f_date, fill=RED)
+        # Date | Ring — left-aligned below title
+        sub = f"{event.get('date', '')}  |  {event.get('ring', '')}"
+        dy  = ty + th + round(10 * s)
+        draw.text((title_x, dy), sub, font=f_date, fill=RED)
+
+        # Logo — vpravo, vertikálně centrované na střed text bloku (nadpis + datum)
+        if logo is not None:
+            lw0, lh0    = logo.size
+            logo_draw_h = round(logo_draw_w * lh0 / lw0)
+            logo_fit    = logo.convert("RGBA").resize((logo_draw_w, logo_draw_h), Image.LANCZOS)
+            text_cy     = (ty + dy + TH(f_date)) // 2   # střed text bloku
+            logo_ty     = max(pt, text_cy - logo_draw_h // 2)
+            canvas.alpha_composite(logo_fit, (logo_lx, logo_ty))
 
     # ── Column header labels ───────────────────────────────────────────────────
     y_ch = colhdr_text_y
