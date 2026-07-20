@@ -15,7 +15,7 @@ from PIL import Image
 
 from generate_card import (
     FONT_FILE, FORMATS, VERT_PAD,
-    ensure_fonts, load_excel, paginate_items, out_filename, render_page,
+    ensure_fonts, load_excel, paginate_items, render_page,
     calc_page1_row_h, calc_max_fights_p2,
 )
 
@@ -152,44 +152,56 @@ progress_bar = st.progress(0, text="Generuji…")
 total_steps  = len(pages) * len(FORMATS)
 step         = 0
 
-zip_buf  = io.BytesIO()
-previews = []   # (format_label, filename, PIL Image) for page 1
+rendered  = {fmt: [] for fmt in FORMATS}   # fmt → [PIL Image per page]
+previews  = []                              # (fmt_label, PIL Image) for page 1
 
+for pnum, page_items in enumerate(pages, 1):
+    for fmt, (fw, fh) in FORMATS.items():
+        pt, pb = VERT_PAD.get(fmt, (0, 0))
+        progress_bar.progress(
+            step / total_steps,
+            text=f"Generuji {fmt.upper()} — strana {pnum}/{len(pages)}…",
+        )
+        img = render_page(fw, fh, page_items, event, font_file,
+                          bg_image, None, pad_top=pt, pad_bottom=pb,
+                          show_header=(pnum == 1),
+                          page_num=pnum, total_pages=len(pages),
+                          row_h_override=_row_h_per_fmt[fmt])
+        rendered[fmt].append(img)
+        if pnum == 1:
+            previews.append((fmt, img))
+        step += 1
+
+progress_bar.progress(0.95, text="Ukládám soubory…")
+
+zip_buf = io.BytesIO()
 with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-    for pnum, page_items in enumerate(pages, 1):
-        for fmt, (fw, fh) in FORMATS.items():
-            pt, pb = VERT_PAD.get(fmt, (0, 0))
-            progress_bar.progress(
-                step / total_steps,
-                text=f"Generuji {fmt.upper()} — strana {pnum}/{len(pages)}…",
-            )
+    # A4 — všechny stránky jako jeden vícestrannkový PDF
+    a4_imgs = [img.convert("RGB") for img in rendered["a4"]]
+    buf = io.BytesIO()
+    a4_imgs[0].save(buf, "PDF", resolution=300, save_all=True,
+                    append_images=a4_imgs[1:])
+    zf.writestr("PDF A4 tisk.pdf", buf.getvalue())
 
-            img  = render_page(fw, fh, page_items, event, font_file,
-                               bg_image, None, pad_top=pt, pad_bottom=pb,
-                               show_header=(pnum == 1),
-                               page_num=pnum, total_pages=len(pages),
-                               row_h_override=_row_h_per_fmt[fmt])
-            name = out_filename(event, fmt, pnum, len(pages))
+    # Stories PNG
+    for i, img in enumerate(rendered["stories"], 1):
+        buf = io.BytesIO()
+        img.save(buf, "PNG", optimize=True)
+        zf.writestr(f"Pribeh_str{i}.png", buf.getvalue())
 
-            buf = io.BytesIO()
-            if fmt == "a4":
-                img.save(buf, "PDF", resolution=300)
-            else:
-                img.save(buf, "PNG", optimize=True)
-            if pnum == 1:
-                previews.append((fmt, name, img))
-
-            zf.writestr(name, buf.getvalue())
-            step += 1
+    # Příspěvek PNG
+    for i, img in enumerate(rendered["prispevek"], 1):
+        buf = io.BytesIO()
+        img.save(buf, "PNG", optimize=True)
+        zf.writestr(f"Prispevek_{i}.png", buf.getvalue())
 
 progress_bar.progress(1.0, text="Hotovo!")
 
 # ── Stažení ───────────────────────────────────────────────────────────────────
-zip_name = f"fight_card_{event.get('date','').replace('/', '-')}.zip"
 st.download_button(
     "⬇️ Stáhnout vše (ZIP)",
     data=zip_buf.getvalue(),
-    file_name=zip_name,
+    file_name="fight_card.zip",
     mime="application/zip",
     type="primary",
     use_container_width=True,
@@ -199,7 +211,7 @@ st.download_button(
 if previews:
     st.subheader("Náhled (strana 1)")
     cols = st.columns(len(previews))
-    for col, (fmt, name, img) in zip(cols, previews):
+    for col, (fmt, img) in zip(cols, previews):
         target_h = 420
         scale    = target_h / img.height
         thumb    = img.resize((round(img.width * scale), target_h), Image.LANCZOS)
