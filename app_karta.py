@@ -145,76 +145,140 @@ if len(pages) > 1:
 st.divider()
 
 # ── Generování ────────────────────────────────────────────────────────────────
-if not st.button("🎨 Generovat grafiky", type="primary", use_container_width=True):
-    st.stop()
+# Pokud se nahraje nový soubor, zrušíme starý výsledek.
+_file_id = getattr(uploaded, "file_id", None)
+if st.session_state.get("_last_file_id") != _file_id:
+    st.session_state.pop("gen", None)
+    st.session_state["_last_file_id"] = _file_id
 
-progress_bar = st.progress(0, text="Generuji…")
-total_steps  = len(pages) * len(FORMATS)
-step         = 0
+if st.button("🎨 Generovat grafiky", type="primary", use_container_width=True):
+    progress_bar = st.progress(0, text="Generuji…")
+    total_steps  = len(pages) * len(FORMATS)
+    step         = 0
 
-rendered  = {fmt: [] for fmt in FORMATS}   # fmt → [PIL Image per page]
-previews  = []                              # (fmt_label, PIL Image) for page 1
+    rendered = {fmt: [] for fmt in FORMATS}
 
-for pnum, page_items in enumerate(pages, 1):
-    for fmt, (fw, fh) in FORMATS.items():
-        pt, pb = VERT_PAD.get(fmt, (0, 0))
-        progress_bar.progress(
-            step / total_steps,
-            text=f"Generuji {fmt.upper()} — strana {pnum}/{len(pages)}…",
-        )
-        img = render_page(fw, fh, page_items, event, font_file,
-                          bg_image, None, pad_top=pt, pad_bottom=pb,
-                          show_header=(pnum == 1),
-                          page_num=pnum, total_pages=len(pages),
-                          row_h_override=_row_h_per_fmt[fmt])
-        rendered[fmt].append(img)
-        if pnum == 1:
-            previews.append((fmt, img))
-        step += 1
+    for pnum, page_items in enumerate(pages, 1):
+        for fmt, (fw, fh) in FORMATS.items():
+            pt, pb = VERT_PAD.get(fmt, (0, 0))
+            progress_bar.progress(
+                step / total_steps,
+                text=f"Generuji {fmt.upper()} — strana {pnum}/{len(pages)}…",
+            )
+            img = render_page(fw, fh, page_items, event, font_file,
+                              bg_image, None, pad_top=pt, pad_bottom=pb,
+                              show_header=(pnum == 1),
+                              page_num=pnum, total_pages=len(pages),
+                              row_h_override=_row_h_per_fmt[fmt])
+            rendered[fmt].append(img)
+            step += 1
 
-progress_bar.progress(0.95, text="Ukládám soubory…")
+    progress_bar.progress(0.95, text="Ukládám soubory…")
 
-zip_buf = io.BytesIO()
-with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-    # A4 — všechny stránky jako jeden vícestrannkový PDF
-    a4_imgs = [img.convert("RGB") for img in rendered["a4"]]
-    buf = io.BytesIO()
-    a4_imgs[0].save(buf, "PDF", resolution=300, save_all=True,
+    # PDF — všechny stránky jako jeden soubor
+    a4_imgs  = [img.convert("RGB") for img in rendered["a4"]]
+    pdf_buf  = io.BytesIO()
+    a4_imgs[0].save(pdf_buf, "PDF", resolution=300, save_all=True,
                     append_images=a4_imgs[1:])
-    zf.writestr("PDF A4 tisk.pdf", buf.getvalue())
+    pdf_bytes = pdf_buf.getvalue()
 
     # Stories PNG
+    stories_files = []
     for i, img in enumerate(rendered["stories"], 1):
-        buf = io.BytesIO()
-        img.save(buf, "PNG", optimize=True)
-        zf.writestr(f"Pribeh_str{i}.png", buf.getvalue())
+        b = io.BytesIO(); img.save(b, "PNG", optimize=True)
+        stories_files.append((f"Pribeh_str{i}.png", b.getvalue()))
 
     # Příspěvek PNG
+    prispevek_files = []
     for i, img in enumerate(rendered["prispevek"], 1):
-        buf = io.BytesIO()
-        img.save(buf, "PNG", optimize=True)
-        zf.writestr(f"Prispevek_{i}.png", buf.getvalue())
+        b = io.BytesIO(); img.save(b, "PNG", optimize=True)
+        prispevek_files.append((f"Prispevek_{i}.png", b.getvalue()))
 
-progress_bar.progress(1.0, text="Hotovo!")
+    # Celkový ZIP
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("PDF A4 tisk.pdf", pdf_bytes)
+        for name, data in stories_files:
+            zf.writestr(name, data)
+        for name, data in prispevek_files:
+            zf.writestr(name, data)
 
-# ── Stažení ───────────────────────────────────────────────────────────────────
-st.download_button(
-    "⬇️ Stáhnout vše (ZIP)",
-    data=zip_buf.getvalue(),
-    file_name="fight_card.zip",
-    mime="application/zip",
-    type="primary",
-    use_container_width=True,
-)
+    # Náhledy — plná kvalita, max. 1080 px šířka
+    def _preview_png(img):
+        if img.width > 1080:
+            nh = round(1080 * img.height / img.width)
+            img = img.resize((1080, nh), Image.LANCZOS)
+        b = io.BytesIO(); img.save(b, "PNG"); return b.getvalue()
 
-# ── Náhled ────────────────────────────────────────────────────────────────────
-if previews:
+    st.session_state["gen"] = {
+        "zip":       zip_buf.getvalue(),
+        "pdf":       pdf_bytes,
+        "stories":   stories_files,
+        "prispevek": prispevek_files,
+        "previews":  [(fmt, _preview_png(rendered[fmt][0]))
+                      for fmt in ("a4", "stories", "prispevek")],
+    }
+
+    progress_bar.progress(1.0, text="Hotovo!")
+
+# ── Výsledky (přetrvají i po kliknutí na stažení) ────────────────────────────
+if "gen" in st.session_state:
+    gen = st.session_state["gen"]
+
+    def _fmt_zip(files):
+        b = io.BytesIO()
+        with zipfile.ZipFile(b, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, data in files:
+                zf.writestr(name, data)
+        return b.getvalue()
+
+    st.divider()
+
+    # Řádek 1: Stáhnout vše
+    st.download_button(
+        "⬇️ Stáhnout vše (ZIP)",
+        data=gen["zip"], file_name="fight_card.zip",
+        mime="application/zip", type="primary", use_container_width=True,
+    )
+
+    # Řádek 2: Stažení po typech
+    col_pdf, col_st, col_pr = st.columns(3)
+
+    col_pdf.download_button(
+        "⬇️ PDF A4",
+        data=gen["pdf"], file_name="PDF A4 tisk.pdf",
+        mime="application/pdf", type="primary", use_container_width=True,
+    )
+
+    if len(gen["stories"]) == 1:
+        col_st.download_button(
+            "⬇️ Příběh (Stories)",
+            data=gen["stories"][0][1], file_name=gen["stories"][0][0],
+            mime="image/png", type="primary", use_container_width=True,
+        )
+    else:
+        col_st.download_button(
+            "⬇️ Příběh (Stories ZIP)",
+            data=_fmt_zip(gen["stories"]), file_name="Pribeh.zip",
+            mime="application/zip", type="primary", use_container_width=True,
+        )
+
+    if len(gen["prispevek"]) == 1:
+        col_pr.download_button(
+            "⬇️ Příspěvek",
+            data=gen["prispevek"][0][1], file_name=gen["prispevek"][0][0],
+            mime="image/png", type="primary", use_container_width=True,
+        )
+    else:
+        col_pr.download_button(
+            "⬇️ Příspěvek (ZIP)",
+            data=_fmt_zip(gen["prispevek"]), file_name="Prispevek.zip",
+            mime="application/zip", type="primary", use_container_width=True,
+        )
+
+    # ── Náhled plná kvalita ───────────────────────────────────────────────────
     st.subheader("Náhled (strana 1)")
-    cols = st.columns(len(previews))
-    for col, (fmt, img) in zip(cols, previews):
-        target_h = 420
-        scale    = target_h / img.height
-        thumb    = img.resize((round(img.width * scale), target_h), Image.LANCZOS)
-        buf      = io.BytesIO()
-        thumb.save(buf, "PNG")
-        col.image(buf.getvalue(), caption=fmt.upper(), use_column_width=True)
+    fmt_labels = {"a4": "A4", "stories": "Stories", "prispevek": "Příspěvek"}
+    cols = st.columns(3)
+    for col, (fmt, png_data) in zip(cols, gen["previews"]):
+        col.image(png_data, caption=fmt_labels[fmt], use_column_width=True)
