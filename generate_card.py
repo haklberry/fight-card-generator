@@ -28,7 +28,7 @@ except ImportError:
 
 # ─── Palette ──────────────────────────────────────────────────────────────────
 NAVY   = (27,  42,  74)
-RED    = (232, 55,  74)
+RED    = (228,  2,  58)
 WHITE  = (255, 255, 255)
 ROW_W  = (255, 255, 255)   # even rows
 ROW_A         = (218, 222, 232)   # odd rows — noticeably darker cool grey
@@ -221,23 +221,32 @@ def load_excel(path: str) -> Tuple[Dict[str, str], List[Dict]]:
 
 # ─── Pagination ───────────────────────────────────────────────────────────────
 
-def paginate_items(items: List[Dict], max_per_page: int = MAX_PER_PAGE) -> List[List[Dict]]:
-    """Split items into pages counting only fights toward max_per_page.
-    Section headers are never left orphaned at the end of a page."""
+def paginate_items(
+    items: List[Dict],
+    max_per_page: int = MAX_PER_PAGE,
+    max_p2_plus: Optional[int] = None,
+) -> List[List[Dict]]:
+    """Split items into pages. Page 1 uses max_per_page; page 2+ uses max_p2_plus
+    (defaults to max_per_page). Section headers are never orphaned at page end."""
+    if max_p2_plus is None:
+        max_p2_plus = max_per_page
+
     pages: List[List[Dict]] = []
     current: List[Dict] = []
     fight_count = 0
 
+    def _max() -> int:
+        return max_per_page if len(pages) == 0 else max_p2_plus
+
     for item in items:
         if item["type"] == "section":
-            if fight_count >= max_per_page:
+            if fight_count >= _max():
                 pages.append(current)
                 current = []
                 fight_count = 0
             current.append(item)
         else:  # fight
-            if fight_count >= max_per_page:
-                # Move orphaned section header to next page if it's the last item
+            if fight_count >= _max():
                 if current and current[-1]["type"] == "section":
                     orphan = current.pop()
                     pages.append(current)
@@ -269,6 +278,81 @@ def out_filename(event: Dict, fmt: str, page: int, total: int) -> str:
     page_suf = f"_page{page}" if total > 1 else ""
     ext = "pdf" if fmt == "a4" else "png"
     return f"{prefix}_{date}_{ring}_{labels[fmt]}{page_suf}.{ext}"
+
+
+# ─── Layout metrics helpers ───────────────────────────────────────────────────
+
+def _page_row_h(
+    w: int, h: int, n_fights: int, n_sections: int,
+    font_file: Path, pad_top: int, pad_bottom: int, show_header: bool,
+) -> int:
+    """Compute the row_h render_page would use — pure geometry, no drawing."""
+    s = w / 1080
+    _edge = round(59 * s)
+    pt = pad_top    if pad_top    > 0 else _edge
+    pb = pad_bottom if pad_bottom > 0 else _edge
+
+    _msr = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    def _TH(f: ImageFont.FreeTypeFont) -> int:
+        bb = _msr.textbbox((0, 0), "Ag", font=f)
+        return bb[3] - bb[1]
+
+    header_h     = round(210 * s) if show_header else 0
+    f_ch         = get_font(font_file, "semibold",  max(1, round(COLHDR_SZ  * s)))
+    colhdr_strip = _TH(f_ch) + round(22 * s)
+    y_rows       = pt + header_h + colhdr_strip + round(8 * s)
+
+    f_nm  = get_font(font_file, "extrabold", max(1, round(NAME_SZ * s)))
+    f_gym = get_font(font_file, "medium",    max(1, round(GYM_SZ  * s)))
+    v_gap    = round(4 * s)
+    ideal_rh = _TH(f_nm) + v_gap + _TH(f_gym) + round(16 * s)
+
+    f_pn     = get_font(font_file, "medium",   max(1, round(PAGENUM_SZ * s)))
+    pnum_res = _TH(f_pn) + round(PNUM_MARGIN_ABOVE * s) + round(PNUM_MARGIN_BELOW * s)
+
+    f_sec    = get_font(font_file, "semibold", max(1, round(18 * s)))
+    sec_slot = round(12 * s) + _TH(f_sec) + round(12 * s)
+    row_gap  = round(5 * s)
+
+    y_end  = h - pb - pnum_res
+    avail  = y_end - y_rows - n_sections * sec_slot
+    raw_rh = (avail - row_gap * max(n_fights - 1, 0)) // max(n_fights, 1)
+    return max(ideal_rh, min(round(160 * s), raw_rh))
+
+
+def calc_page1_row_h(
+    w: int, h: int, page1_items: List[Dict],
+    font_file: Path, pad_top: int = 0, pad_bottom: int = 0,
+) -> int:
+    """Row height page 1 would use — call before paginating page 2+."""
+    n_f = sum(1 for x in page1_items if x["type"] == "fight")
+    n_s = sum(1 for x in page1_items if x["type"] == "section")
+    return _page_row_h(w, h, n_f, n_s, font_file, pad_top, pad_bottom, show_header=True)
+
+
+def calc_max_fights_p2(
+    w: int, h: int, fixed_row_h: int,
+    font_file: Path, pad_top: int = 0, pad_bottom: int = 0,
+) -> int:
+    """Max fights that fit on page 2+ with the given fixed row_h (no header)."""
+    s = w / 1080
+    _edge = round(59 * s)
+    pt = pad_top    if pad_top    > 0 else _edge
+    pb = pad_bottom if pad_bottom > 0 else _edge
+
+    _msr = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    def _TH(f: ImageFont.FreeTypeFont) -> int:
+        bb = _msr.textbbox((0, 0), "Ag", font=f)
+        return bb[3] - bb[1]
+
+    f_ch         = get_font(font_file, "semibold", max(1, round(COLHDR_SZ * s)))
+    colhdr_strip = _TH(f_ch) + round(22 * s)
+    y_rows       = pt + colhdr_strip + round(8 * s)   # no header_h
+    f_pn         = get_font(font_file, "medium",   max(1, round(PAGENUM_SZ * s)))
+    pnum_res     = _TH(f_pn) + round(PNUM_MARGIN_ABOVE * s) + round(PNUM_MARGIN_BELOW * s)
+    row_gap      = round(5 * s)
+    available    = h - pb - pnum_res - y_rows
+    return max(1, (available + row_gap) // (fixed_row_h + row_gap))
 
 
 # ─── Drawing helpers ──────────────────────────────────────────────────────────
@@ -326,9 +410,12 @@ GYM_SZ    = 20   # Medium    — gym name (unchanged)
 WT_SZ     = 26   # Bold      — weight value
 TIME_SZ   = 24   # Bold      — round format
 NUM_SZ    = 24   # Bold      — fight number
-DATE_SZ   = 38   # Bold      — date / ring
-COLHDR_SZ = 22   # SemiBold  — column labels
-TITLE_SZ  = 70   # ExtraBold — event title (auto-shrinks to fit)
+DATE_SZ           = 38   # Bold      — date / ring
+COLHDR_SZ         = 22   # SemiBold  — column labels
+TITLE_SZ          = 60   # ExtraBold — event title (auto-shrinks to fit)
+PAGENUM_SZ        = 18   # Medium    — page number at bottom
+PNUM_MARGIN_ABOVE = 20   # pts of clear space above page-number text (fights end here)
+PNUM_MARGIN_BELOW =  8   # pts between page-number text and bottom-padding edge
 
 
 def render_page(
@@ -340,10 +427,18 @@ def render_page(
     logo: Optional[Image.Image],
     pad_top: int = 0,
     pad_bottom: int = 0,
+    show_header: bool = True,
+    page_num: int = 1,
+    total_pages: int = 1,
+    row_h_override: Optional[int] = None,
 ) -> Image.Image:
 
     s  = w / 1080   # horizontal scale relative to 1080 px base
-    pt = pad_top    # top padding in pixels (not scaled)
+
+    # Uniform edge margin for A4 (pad_top/pad_bottom == 0); stories/prispevek keep their VERT_PAD
+    _edge = round(59 * s)
+    pt = pad_top    if pad_top    > 0 else _edge
+    pb = pad_bottom if pad_bottom > 0 else _edge
 
     # ── Measurement helpers ───────────────────────────────────────────────────
     _msr = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
@@ -363,11 +458,14 @@ def render_page(
     pad_l      = round(30 * s)
     pad_r      = round(30 * s)
     card_pad_x = round(12 * s)
-    header_h   = round(210 * s)
+    header_h   = round(210 * s) if show_header else 0
 
     f_colhdr      = F("semibold", COLHDR_SZ * s)
-    colhdr_strip  = TH(f_colhdr) + round(14 * s)
-    colhdr_text_y = pt + header_h + round(7 * s)   # absolute y of label text
+    colhdr_strip  = TH(f_colhdr) + round(22 * s)
+    _ch_bb        = _msr.textbbox((0, 0), "VÁHA", font=f_colhdr)
+    _ch_h         = _ch_bb[3] - _ch_bb[1]
+    _ch_top       = _ch_bb[1]
+    colhdr_text_y = pt + header_h + (colhdr_strip - _ch_h) // 2 - _ch_top
     nav_total     = header_h + colhdr_strip          # height of navy section
     row_top_gap   = round(8 * s)
     y_rows        = pt + nav_total + row_top_gap     # absolute y of first row card
@@ -379,8 +477,12 @@ def render_page(
     row_v_pad  = round(16 * s)
     ideal_rh   = block_h + row_v_pad
 
+    f_pnum_fnt    = F("medium", round(PAGENUM_SZ * s))
+    pnum_h        = TH(f_pnum_fnt)
+    pnum_reserved = pnum_h + round(PNUM_MARGIN_ABOVE * s) + round(PNUM_MARGIN_BELOW * s)
+
     row_gap   = round(5 * s)
-    y_end     = h - pad_bottom - round(20 * s)
+    y_end     = h - pb - pnum_reserved
     available = y_end - y_rows
 
     # Section header metrics (used for height budget and drawing)
@@ -393,7 +495,10 @@ def render_page(
 
     available_for_fights = available - n_sections * section_slot_h
     raw_rh = (available_for_fights - row_gap * max(n_fights - 1, 0)) // max(n_fights, 1)
-    row_h  = max(ideal_rh, min(round(160 * s), raw_rh))
+    if row_h_override is not None:
+        row_h = row_h_override
+    else:
+        row_h = max(ideal_rh, min(round(160 * s), raw_rh))
 
     rs = s * min(1.0, row_h / ideal_rh)
 
@@ -414,9 +519,8 @@ def render_page(
     bwt_cx = tim_cx + (time_ref // 2 + col_gap + wt_ref // 2)
 
     num_ref = TW(f_num, "15")
-    num_cx  = pad_l + card_pad_x + num_ref // 2
-
     red_lx  = pad_l + card_pad_x + num_ref + round(10 * s)
+    num_cx  = (pad_l + red_lx) // 2   # center of number column
     red_rx  = rwt_cx - wt_ref // 2 - col_gap
     blue_lx = bwt_cx + wt_ref // 2 + col_gap
     blue_rx = w - pad_r - card_pad_x
@@ -429,24 +533,33 @@ def render_page(
         f_title = F("extrabold", round(TITLE_SZ * s * title_max_w / tw_raw))
     f_date = F("bold", DATE_SZ * s)
 
-    # ── Canvas — solid NAVY background ───────────────────────────────────────
-    canvas = Image.new("RGBA", (w, h), NAVY + (255,))
-    draw   = ImageDraw.Draw(canvas)
+    # ── Canvas — custom background or solid navy ─────────────────────────────
+    if bg is not None:
+        bg_w, bg_h = bg.size
+        scale  = max(w / bg_w, h / bg_h)
+        nw, nh = round(bg_w * scale), round(bg_h * scale)
+        bg_fit = bg.convert("RGBA").resize((nw, nh), Image.LANCZOS)
+        ox, oy = (nw - w) // 2, (nh - h) // 2
+        canvas = bg_fit.crop((ox, oy, ox + w, oy + h)).copy()
+    else:
+        canvas = Image.new("RGBA", (w, h), NAVY + (255,))
+    draw = ImageDraw.Draw(canvas)
 
     # ── Full navy block (title + date + column labels), offset by pt ──────────
     draw.rectangle([0, pt, w, pt + nav_total], fill=NAVY)
 
-    # Title — centred across full width
-    title  = event.get("title", "")
-    tw, th = text_size(draw, title, f_title)
-    ty     = pt + round(36 * s)
-    draw.text((w // 2 - tw // 2, ty), title, font=f_title, fill=WHITE)
+    if show_header:
+        # Title — centred across full width
+        title  = event.get("title", "")
+        tw, th = text_size(draw, title, f_title)
+        ty     = pt + round(36 * s)
+        draw.text((w // 2 - tw // 2, ty), title, font=f_title, fill=WHITE)
 
-    # Date | Ring — centred below title
-    sub   = f"{event.get('date', '')}  |  {event.get('ring', '')}"
-    sw, _ = text_size(draw, sub, f_date)
-    dy    = ty + th + round(10 * s)
-    draw.text((w // 2 - sw // 2, dy), sub, font=f_date, fill=RED)
+        # Date | Ring — centred below title
+        sub   = f"{event.get('date', '')}  |  {event.get('ring', '')}"
+        sw, _ = text_size(draw, sub, f_date)
+        dy    = ty + th + round(10 * s)
+        draw.text((w // 2 - sw // 2, dy), sub, font=f_date, fill=RED)
 
     # ── Column header labels ───────────────────────────────────────────────────
     y_ch = colhdr_text_y
@@ -481,10 +594,10 @@ def render_page(
             rx1 = w // 2 + tw // 2 + gap_txt
             rx2 = w - pad_r - pad_in
             if lx2 > lx1:
-                draw.line([(lx1, y_mid), (lx2, y_mid)], fill=SECTION_LINE, width=lw)
-            draw_halign(draw, w // 2, y_text, sec_text, f_sec, WHITE)
+                draw.line([(lx1, y_mid), (lx2, y_mid)], fill=RED, width=lw)
+            draw_halign(draw, w // 2, y_text, sec_text, f_sec, RED)
             if rx2 > rx1:
-                draw.line([(rx1, y_mid), (rx2, y_mid)], fill=SECTION_LINE, width=lw)
+                draw.line([(rx1, y_mid), (rx2, y_mid)], fill=RED, width=lw)
             y += section_slot_h
             continue
 
@@ -529,6 +642,12 @@ def render_page(
         draw.text((blue_rx - gw, gy), bgym,  font=f_gym,  fill=NAVY)
 
         y += row_h + row_gap
+
+    # ── Page number at bottom centre ──────────────────────────────────────────
+    pnum_text = f"str. {page_num} z {total_pages}"
+    ptw, _    = text_size(draw, pnum_text, f_pnum_fnt)
+    pnum_y    = h - pb - round(PNUM_MARGIN_BELOW * s) - pnum_h
+    draw.text((w // 2 - ptw // 2, pnum_y), pnum_text, font=f_pnum_fnt, fill=WHITE)
 
     return canvas.convert("RGB")
 
@@ -576,7 +695,9 @@ def main() -> None:
             print(f"  [{fmt:<10}]  {fw}×{fh} px … ", end="", flush=True)
             pt, pb = VERT_PAD.get(fmt, (0, 0))
             img    = render_page(fw, fh, page_items, event, font_file, bg_img, logo_img,
-                                 pad_top=pt, pad_bottom=pb)
+                                 pad_top=pt, pad_bottom=pb,
+                                 show_header=(pnum == 1),
+                                 page_num=pnum, total_pages=len(pages))
             name   = out_filename(event, fmt, pnum, len(pages))
             dest = out_dir / name
             if fmt == "a4":
