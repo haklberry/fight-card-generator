@@ -17,13 +17,13 @@ from typing import Dict, List, Optional, Tuple
 
 try:
     import openpyxl
-except ImportError:
-    sys.exit("Missing dependency — run: pip install openpyxl")
+except ImportError as _e:
+    raise ImportError("Missing dependency — run: pip install openpyxl") from _e
 
 try:
     from PIL import Image, ImageDraw, ImageFont
-except ImportError:
-    sys.exit("Missing dependency — run: pip install 'Pillow>=9.2.0'")
+except ImportError as _e:
+    raise ImportError("Missing dependency — run: pip install 'Pillow>=9.2.0'") from _e
 
 
 # ─── Palette ──────────────────────────────────────────────────────────────────
